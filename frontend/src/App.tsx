@@ -37,6 +37,30 @@ function App() {
     const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState("");
     const deferredWorkspaceSearchQuery = useDeferredValue(workspaceSearchQuery);
     const isAuthCallbackRoute = typeof window !== "undefined" && window.location.pathname === "/auth/callback";
+    const fetchCurrentUser = async (config: AuthConfig, signal?: AbortSignal) => {
+        try {
+            const currentUser = await fetchJson<User>(
+                '/api/auth/me',
+                signal ? { signal } : undefined,
+                'Failed to fetch current user'
+            );
+            if (signal?.aborted) {
+                return;
+            }
+            setUser(currentUser);
+            setAuthError(null);
+        } catch (err) {
+            if (signal?.aborted) {
+                return;
+            }
+            if (err instanceof ApiHttpError && (err.status === 401 || err.status === 403)) {
+                setUser(null);
+                setAuthError(config.auth_enabled && err.status === 403 ? err.message : null);
+                return;
+            }
+            throw err;
+        }
+    };
 
     // Fetch auth configuration on mount
     useEffect(() => {
@@ -55,44 +79,14 @@ function App() {
 
                 setAuthConfig(config);
                 setAuthError(null);
-
-                // If auth is disabled, auto-login as guest
-                if (!config.auth_enabled) {
-                    const guestUser: User = { name: 'Guest', email: 'guest@local', role: 'viewer' };
-                    setUser(guestUser);
-                    return;
-                }
-
-                try {
-                    const currentUser = await fetchJson<User>(
-                        '/api/auth/me',
-                        { signal: controller.signal },
-                        'Failed to fetch current user'
-                    );
-                    if (controller.signal.aborted) {
-                        return;
-                    }
-                    setUser(currentUser);
-                    setAuthError(null);
-                } catch (err) {
-                    if (controller.signal.aborted) {
-                        return;
-                    }
-                    if (err instanceof ApiHttpError && (err.status === 401 || err.status === 403)) {
-                        setUser(null);
-                        setAuthError(err.status === 403 ? err.message : null);
-                    } else {
-                        setUser(null);
-                    }
-                }
+                await fetchCurrentUser(config, controller.signal);
             } catch (err) {
                 if (controller.signal.aborted) {
                     return;
                 }
                 console.error('Failed to fetch auth config:', err);
-                // On error, default to no auth (allow access)
-                const guestUser: User = { name: 'Guest', email: 'guest@local', role: 'viewer' };
-                setUser(guestUser);
+                setUser(null);
+                setAuthError('Failed to initialize authentication');
             } finally {
                 if (!controller.signal.aborted) {
                     setLoading(false);
@@ -129,14 +123,12 @@ function App() {
     };
 
     const handleAuthCodeSuccess = () => {
-        void fetchJson<User>(
-            '/api/auth/me',
-            undefined,
-            'Failed to fetch current user'
-        ).then((currentUser) => {
-            setUser(currentUser);
-            setAuthError(null);
-        }).catch((err) => {
+        if (!authConfig) {
+            setAuthError('Failed to initialize authentication');
+            setUser(null);
+            return;
+        }
+        void fetchCurrentUser(authConfig).catch((err) => {
             setAuthError(err instanceof Error ? err.message : 'Authentication failed');
             setUser(null);
         });
@@ -151,7 +143,15 @@ function App() {
         );
     }
 
-    if (authConfig?.auth_enabled && !user && isAuthCallbackRoute) {
+    if (!authConfig) {
+        return (
+            <div className="flex items-center justify-center h-screen bg-background">
+                <div className="text-red-500">{authError || 'Failed to load authentication configuration.'}</div>
+            </div>
+        );
+    }
+
+    if (authConfig.auth_enabled && !user && isAuthCallbackRoute) {
         return (
             <Suspense fallback={<RouteFallback />}>
                 <AuthCallbackPage onLoginSuccess={handleAuthCodeSuccess} />
@@ -160,7 +160,7 @@ function App() {
     }
 
     // If auth is enabled and no user, show login page
-    if (authConfig?.auth_enabled && !user) {
+    if (authConfig.auth_enabled && !user) {
         // Fallback for missing client ID in config
         if (!authConfig.google_client_id) {
             return (
@@ -179,6 +179,14 @@ function App() {
                     initialError={authError}
                 />
             </Suspense>
+        );
+    }
+
+    if (!user) {
+        return (
+            <div className="flex items-center justify-center h-screen bg-background">
+                <div className="text-red-500">{authError || 'Failed to resolve current user.'}</div>
+            </div>
         );
     }
 
