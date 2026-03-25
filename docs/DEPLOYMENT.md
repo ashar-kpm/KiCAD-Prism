@@ -112,8 +112,8 @@ DEV_MODE=false
 
 Behavior:
 - login wall is disabled
-- backend serves a guest viewer session
-- write operations still require privileged roles, so this mode is best for public read-only use
+- backend serves a guest admin session
+- all visitors have full admin/designer/viewer access while auth is disabled
 
 ### Google Login + Session Auth
 

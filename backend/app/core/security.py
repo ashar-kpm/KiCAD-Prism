@@ -15,7 +15,7 @@ class AuthenticatedUser(BaseModel):
 
 
 def guest_user() -> AuthenticatedUser:
-    return AuthenticatedUser(email="guest@local", name="Guest User", picture="", role="viewer")
+    return AuthenticatedUser(email="guest@local", name="Guest User", picture="", role="admin")
 
 
 def _resolve_allowed_user_role(email: str) -> Role | None:
