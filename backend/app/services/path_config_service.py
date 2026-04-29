@@ -221,18 +221,38 @@ def _find_directory_by_keywords(directory: Path, keywords: List[str], required_c
     return None
 
 
+def _select_root_schematic(project_path: Path, candidates: List[Path]) -> Optional[Path]:
+    """Select the project root schematic from candidate .kicad_sch files."""
+    sch_files = sorted(
+        {candidate for candidate in candidates if candidate.is_file()},
+        key=lambda candidate: str(candidate.relative_to(project_path)).casefold()
+    )
+    if not sch_files:
+        return None
+
+    pro_files = sorted(project_path.glob("*.kicad_pro"), key=lambda item: item.name.casefold())
+    for pro_file in pro_files:
+        for sch_file in sch_files:
+            if sch_file.stem.casefold() == pro_file.stem.casefold():
+                return sch_file
+
+    project_name = project_path.name.casefold()
+    for sch_file in sch_files:
+        if sch_file.stem.casefold() == project_name:
+            return sch_file
+
+    if len(sch_files) == 1:
+        return sch_files[0]
+
+    return None
+
+
 def _detect_schematic_path(project_path: Path) -> Optional[str]:
     """Detect main schematic file path."""
-    # Look for .kicad_sch files in root
-    sch_files = list(project_path.glob("*.kicad_sch"))
-    if sch_files:
-        # Prefer one matching project directory name, otherwise first found
-        project_name = project_path.name
-        for sch in sch_files:
-            if sch.stem.lower() == project_name.lower():
-                return sch.name
-        return sch_files[0].name
-    return None
+    selected = _select_root_schematic(project_path, list(project_path.glob("*.kicad_sch")))
+    if not selected:
+        return None
+    return selected.relative_to(project_path).as_posix()
 
 
 def _detect_pcb_path(project_path: Path) -> Optional[str]:
@@ -439,9 +459,9 @@ def resolve_paths(project_path: str, config: Optional[PathConfig] = None) -> Res
     schematic_path = None
     if config.schematic:
         if '*' in config.schematic:
-            matches = list(project_dir.glob(config.schematic))
-            if matches:
-                schematic_path = str(matches[0])
+            selected = _select_root_schematic(project_dir, list(project_dir.glob(config.schematic)))
+            if selected:
+                schematic_path = str(selected)
         else:
             schematic_path = resolve_path(config.schematic)
     

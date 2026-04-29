@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 from typing import Optional, List, Dict
-from app.services.project_service import get_registered_projects
+from app.services.project_service import get_registered_projects, find_schematic_file
 from app.services import bom_diff_service
 
 # Global job store
@@ -265,17 +265,28 @@ def _run_diff_generation(job_id: str, project_id: str, commit1: str, commit2: st
         COLOR_NEW = "#00AA00" # Slightly darker green for visibility on white
         COLOR_OLD = "#FF0000"
         
+        # Per-commit sch output dirs, captured for the post-loop union.
+        sch_dirs: Dict[str, Path] = {}
+
         for commit, directory, color in [(commit1, c1_dir, COLOR_NEW), (commit2, c2_dir, COLOR_OLD)]:
             # 1. Locate design files
-            sch_file = next(directory.rglob("*.kicad_sch"), None)
+            # Use the path-config-resolved root so kicad-cli walks the full
+            # hierarchy. Picking an arbitrary .kicad_sch via rglob would miss
+            # subsheets not reachable from that match.
+            main_sch_str = find_schematic_file(str(directory))
+            sch_file = Path(main_sch_str) if main_sch_str else None
+            if sch_file and not sch_file.exists():
+                sch_file = None
+
             pcb_file = next(directory.rglob("*.kicad_pcb"), None)
-            
+
             # 2. Export Schematics
             if sch_file:
                 sch_out_dir = directory / "sch"
                 sch_out_dir.mkdir(exist_ok=True)
+                sch_dirs[commit] = sch_out_dir
                 job['logs'].append(f"Exporting Schematics for {commit}...")
-                
+
                 cmd = [
                     CLI_CMD, "sch", "export", "svg",
                     "--black-and-white",
@@ -284,17 +295,16 @@ def _run_diff_generation(job_id: str, project_id: str, commit1: str, commit2: st
                 ]
                 job['logs'].append(f"SCH CMD: {' '.join(cmd)}")
                 res = subprocess.run(cmd, capture_output=True, text=True)
-                
+
                 if res.returncode == 0:
-                    found_svgs = list(sch_out_dir.glob("*.svg"))
-                    for svg in found_svgs:
+                    for svg in list(sch_out_dir.glob("*.svg")):
                         _colorize_svg(svg, color)
-                    
                     if commit == commit1:
                         manifest["schematic"] = True
-                        manifest["sheets"] = sorted([f.name for f in found_svgs])
                 else:
                     job['logs'].append(f"SCH Export FAILED (Code {res.returncode})")
+            else:
+                job['logs'].append(f"No root .kicad_sch resolved for {commit}")
             
             # 3. Export PCB Layers
             if pcb_file:
@@ -357,6 +367,14 @@ def _run_diff_generation(job_id: str, project_id: str, commit1: str, commit2: st
             else:
                 job['logs'].append(f"No .kicad_pcb found for {commit}")
 
+        # Publish the union of emitted SVG filenames across both commits, so
+        # sheets that exist in only one commit (added/removed) still appear.
+        sheet_union: set = set()
+        for d in sch_dirs.values():
+            sheet_union.update(p.name for p in d.glob("*.svg"))
+        if sheet_union:
+            manifest["sheets"] = sorted(sheet_union)
+
         # 4. BoM Diff
         job['logs'].append("Generating BoM Diff...")
         try:
@@ -365,8 +383,12 @@ def _run_diff_generation(job_id: str, project_id: str, commit1: str, commit2: st
             
             bom_csvs = {}
             for commit, directory in [(commit1, c1_dir), (commit2, c2_dir)]:
-                sch_file = next(directory.rglob("*.kicad_sch"), None)
-                if sch_file:
+                # Use the path-config-resolved root schematic so kicad-cli can
+                # walk the full hierarchy. Picking an arbitrary subsheet here
+                # would silently produce a partial BoM.
+                main_sch_str = find_schematic_file(str(directory))
+                sch_file = Path(main_sch_str) if main_sch_str else None
+                if sch_file and sch_file.exists():
                     csv_path = directory / "bom.csv"
                     cmd = [
                         CLI_CMD, "sch", "export", "bom",
@@ -379,6 +401,8 @@ def _run_diff_generation(job_id: str, project_id: str, commit1: str, commit2: st
                         bom_csvs[commit] = csv_path.read_text(encoding="utf-8")
                     else:
                         job['logs'].append(f"BoM export failed for {commit}: {res.stderr}")
+                else:
+                    job['logs'].append(f"Skipping BoM export for {commit}: no root .kicad_sch resolved")
             
             if commit1 in bom_csvs and commit2 in bom_csvs:
                 old_bom = bom_diff_service.parse_bom_csv(bom_csvs[commit2])
