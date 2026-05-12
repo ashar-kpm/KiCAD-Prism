@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchApi, fetchJson, readApiError } from "@/lib/api";
 import { FolderTreeItem, Project } from "@/types/project";
@@ -27,14 +27,21 @@ interface WorkspaceBootstrapResponse {
   folders: FolderTreeItem[];
 }
 
+// Module-level cache so data persists across component mounts/unmounts
+let _cachedData: WorkspaceBootstrapResponse | null = null;
+
 export function useWorkspaceData(): WorkspaceDataState {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [folders, setFolders] = useState<FolderTreeItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState<Project[]>(_cachedData?.projects ?? []);
+  const [folders, setFolders] = useState<FolderTreeItem[]>(_cachedData?.folders ?? []);
+  const [loading, setLoading] = useState(_cachedData === null);
   const [error, setError] = useState<string | null>(null);
+  const isMounted = useRef(true);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    // Only show loading spinner on first load (no cached data)
+    if (!_cachedData) {
+      setLoading(true);
+    }
     setError(null);
 
     try {
@@ -43,20 +50,30 @@ export function useWorkspaceData(): WorkspaceDataState {
         undefined,
         "Failed to load workspace"
       );
-      setProjects(data.projects);
-      setFolders(data.folders);
-      setError(null);
+      _cachedData = data;
+      if (isMounted.current) {
+        setProjects(data.projects);
+        setFolders(data.folders);
+        setError(null);
+      }
     } catch (error) {
-      setProjects([]);
-      setFolders([]);
-      setError(error instanceof Error ? error.message : "Failed to load workspace");
+      if (isMounted.current && !_cachedData) {
+        // Only clear data if we have no cache to fall back on
+        setProjects([]);
+        setFolders([]);
+        setError(error instanceof Error ? error.message : "Failed to load workspace");
+      }
     } finally {
-      setLoading(false);
+      if (isMounted.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    isMounted.current = true;
     void refresh();
+    return () => { isMounted.current = false; };
   }, [refresh]);
 
   const folderById = useMemo(() => {

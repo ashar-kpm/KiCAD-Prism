@@ -1,17 +1,14 @@
+import asyncio
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.core.security import AuthenticatedUser, require_designer, require_viewer
-from app.services import folder_service, project_service
+from app.services.workspace_service import workspace
+from app.api._helpers import _row_to_project
 
 router = APIRouter(dependencies=[Depends(require_viewer)])
-
-
-class FolderContentsResponse(BaseModel):
-    folders: List[folder_service.Folder]
-    projects: List[project_service.Project]
 
 
 class CreateFolderRequest(BaseModel):
@@ -39,27 +36,29 @@ def _normalize_folder_name(name: str) -> str:
     return normalized
 
 
-@router.get("/tree", response_model=List[folder_service.FolderTreeItem])
+@router.get("/tree")
 async def get_folder_tree(user: AuthenticatedUser = Depends(require_viewer)):
-    return folder_service.get_folder_tree(user.role)
+    return await asyncio.to_thread(workspace.get_folder_tree, user.role)
 
 
-@router.get("/contents", response_model=FolderContentsResponse)
+@router.get("/contents")
 async def get_folder_contents(
     folder_id: Optional[str] = Query(default=None),
     user: AuthenticatedUser = Depends(require_viewer),
 ):
     try:
-        payload = folder_service.get_folder_contents(folder_id, user.role)
-        return FolderContentsResponse(**payload)
+        payload = await asyncio.to_thread(workspace.get_folder_contents, folder_id, user.role)
+        payload["projects"] = [_row_to_project(r) for r in payload["projects"]]
+        return payload
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
 
 
-@router.post("/", response_model=folder_service.Folder, dependencies=[Depends(require_designer)])
+@router.post("/", dependencies=[Depends(require_designer)])
 async def create_folder(request: CreateFolderRequest):
     try:
-        return folder_service.create_folder(
+        return await asyncio.to_thread(
+            workspace.create_folder,
             name=_normalize_folder_name(request.name),
             parent_id=request.parent_id,
         )
@@ -67,17 +66,23 @@ async def create_folder(request: CreateFolderRequest):
         raise HTTPException(status_code=400, detail=str(error))
 
 
-@router.patch("/{folder_id}", response_model=folder_service.Folder, dependencies=[Depends(require_designer)])
+@router.patch("/{folder_id}", dependencies=[Depends(require_designer)])
 async def update_folder(folder_id: str, request: UpdateFolderRequest):
     field_set = request.model_fields_set
     if "name" not in field_set and "parent_id" not in field_set:
         raise HTTPException(status_code=400, detail="No update fields provided")
 
     name = _normalize_folder_name(request.name) if "name" in field_set and request.name is not None else request.name
-    parent_id = request.parent_id if "parent_id" in field_set else folder_service.UNSET
+    use_parent = "parent_id" in field_set
 
     try:
-        return folder_service.update_folder(folder_id=folder_id, name=name, parent_id=parent_id)
+        return await asyncio.to_thread(
+            workspace.update_folder,
+            folder_id=folder_id,
+            name=name,
+            parent_id=request.parent_id,
+            _use_parent=use_parent,
+        )
     except ValueError as error:
         raise HTTPException(status_code=_status_code_for_value_error(error), detail=str(error))
 
@@ -85,7 +90,7 @@ async def update_folder(folder_id: str, request: UpdateFolderRequest):
 @router.delete("/{folder_id}", dependencies=[Depends(require_designer)])
 async def delete_folder(folder_id: str, cascade: bool = Query(default=True)):
     try:
-        deleted = folder_service.delete_folder(folder_id=folder_id, cascade=cascade)
+        deleted = await asyncio.to_thread(workspace.delete_folder, folder_id, cascade)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -97,9 +102,8 @@ async def delete_folder(folder_id: str, cascade: bool = Query(default=True)):
 
 @router.post("/projects/{project_id}/move", dependencies=[Depends(require_designer)])
 async def move_project_to_folder(project_id: str, request: MoveProjectRequest):
-    try:
-        folder_service.move_project_to_folder(project_id=project_id, folder_id=request.folder_id)
-    except ValueError as error:
-        raise HTTPException(status_code=_status_code_for_value_error(error), detail=str(error))
+    result = await asyncio.to_thread(workspace.move_project_to_folder, project_id, request.folder_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Project not found")
 
     return {"message": "Project moved successfully"}

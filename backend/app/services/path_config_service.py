@@ -7,6 +7,7 @@ Provides flexible folder mapping for KiCAD projects, supporting:
 3. Fallback to default paths
 """
 
+import logging
 import os
 import json
 import fnmatch
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, asdict
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 # Default path mappings (legacy structure)
 DEFAULT_PATHS = {
@@ -171,7 +174,7 @@ def _load_prism_config(project_path: str) -> Optional[Dict[str, Any]]:
                         result[key] = value
                 return result
         except (json.JSONDecodeError, IOError) as e:
-            print(f"Warning: Failed to parse .prism.json: {e}")
+            logger.warning("Failed to parse .prism.json: %s", e)
     return None
 
 

@@ -4,6 +4,7 @@ Native Visual Diff Service
 Generates visual diffs between commits using local kicad-cli.
 """
 
+import logging
 import os
 import subprocess
 import threading
@@ -14,7 +15,8 @@ import json
 import re
 from pathlib import Path
 from typing import Optional, List, Dict
-from app.services.project_service import get_registered_projects, find_schematic_file
+from app.services.project_service import find_schematic_file
+from app.services.workspace_service import workspace
 from app.services import bom_diff_service
 
 # Global job store
@@ -79,8 +81,34 @@ def _get_cli_command() -> str:
     # Fallback to default name
     return cli_name
 
+logger = logging.getLogger(__name__)
+
 CLI_CMD = _get_cli_command()
-print(f"[{platform.system()}] Resolved kicad-cli: {CLI_CMD}")
+logger.info("[%s] Resolved kicad-cli: %s", platform.system(), CLI_CMD)
+
+
+def _prune_stale_diff_dirs() -> None:
+    """Remove diff output directories older than MAX_JOB_AGE_SECONDS."""
+    diff_root = Path("/tmp/prism_diff")
+    if not diff_root.is_dir():
+        return
+    cutoff = time.time() - MAX_JOB_AGE_SECONDS
+    pruned = 0
+    for child in diff_root.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            if child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+                pruned += 1
+        except OSError:
+            pass
+    if pruned:
+        logger.info("Pruned %d stale diff job(s) from %s", pruned, diff_root)
+
+
+# Prune on module load (once per worker startup)
+_prune_stale_diff_dirs()
 
 
 def _find_kicad_pro_file(directory: Path) -> Optional[Path]:
@@ -212,12 +240,11 @@ def _run_diff_generation(job_id: str, project_id: str, commit1: str, commit2: st
     
     try:
         # 1. Setup paths
-        projects = get_registered_projects()
-        project = next((p for p in projects if p.id == project_id), None)
-        if not project:
+        row = workspace.get_project_by_id(project_id)
+        if not row:
             raise ValueError(f"Project '{project_id}' not found")
             
-        project_path = Path(project.path)
+        project_path = Path(row['path'])
         job_dir = (Path("/tmp/prism_diff") / job_id).resolve()
         job_dir.mkdir(parents=True, exist_ok=True)
         job['abs_output_path'] = str(job_dir)

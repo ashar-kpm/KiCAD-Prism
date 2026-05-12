@@ -14,6 +14,7 @@ from app.api.oauth import router as oauth_router
 from app.api.service_clients import router as service_clients_router
 from app.services.comments_store_service import initialize_comments_store
 from app.services.component_catalog_service import catalog_service
+from app.services.workspace_service import workspace
 from app.core.config import settings
 import subprocess
 import os
@@ -108,6 +109,7 @@ async def lifespan(app: FastAPI):
     ensure_ssh_dir()
     initialize_comments_store()
     catalog_service.initialize()
+    workspace.initialize()
     try:
         yield
     finally:

@@ -1,21 +1,17 @@
-from typing import List
+import asyncio
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
 from app.core.security import AuthenticatedUser, require_viewer
-from app.services import folder_service, project_service
+from app.services.workspace_service import workspace
+from app.api._helpers import _row_to_project
 
 router = APIRouter(dependencies=[Depends(require_viewer)])
 
 
-class WorkspaceBootstrapResponse(BaseModel):
-    projects: List[project_service.Project]
-    folders: List[folder_service.FolderTreeItem]
-
-
-@router.get("/bootstrap", response_model=WorkspaceBootstrapResponse)
+@router.get("/bootstrap")
 async def get_workspace_bootstrap(user: AuthenticatedUser = Depends(require_viewer)):
-    projects = folder_service.filter_projects_for_role(project_service.get_registered_projects(), user.role)
-    folders = folder_service.get_folder_tree(user.role)
-    return WorkspaceBootstrapResponse(projects=projects, folders=folders)
+    data = await asyncio.to_thread(workspace.get_bootstrap_data, user.role)
+    projects = [_row_to_project(r) for r in data["projects"]]
+    return {"projects": projects, "folders": data["folders"]}

@@ -45,19 +45,32 @@ def _ensure_role_store_directory() -> None:
     os.makedirs(os.path.dirname(_role_store_path()), exist_ok=True)
 
 
+_role_cache: dict[str, Any] | None = None
+_role_cache_mtime: float = 0.0
+
+
 def _load_role_store() -> dict[str, Any]:
+    global _role_cache, _role_cache_mtime
     path = _role_store_path()
-    if not os.path.exists(path):
+
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
         return _default_store()
+
+    if _role_cache is not None and _role_cache_mtime == mtime:
+        return _role_cache
 
     try:
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
         if not isinstance(payload, dict):
-            return _default_store()
+            payload = _default_store()
         users = payload.get("users")
         if not isinstance(users, dict):
             payload["users"] = {}
+        _role_cache = payload
+        _role_cache_mtime = mtime
         return payload
     except (OSError, json.JSONDecodeError):
         return _default_store()

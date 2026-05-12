@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 from pathlib import Path
@@ -7,16 +8,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from app.api._helpers import get_project_for_role_or_404, require_output_type, resolve_path_within_root
+from app.api._helpers import get_project_for_role_or_404, _row_to_project, require_output_type, resolve_path_within_root
 from app.core.security import AuthenticatedUser, require_designer, require_viewer
 from app.services import (
     file_service,
-    folder_service,
     path_config_service,
     project_import_service,
     project_properties_service,
     project_service,
 )
+from app.services.workspace_service import workspace
 from app.services.comments_url_service import build_comments_source_urls, resolve_comments_base_url
 from app.services.git_service import (
     get_commit_distance,
@@ -164,7 +165,7 @@ def _filter_projects_for_user(
     projects: List[project_service.Project],
     user: AuthenticatedUser,
 ) -> List[project_service.Project]:
-    return folder_service.filter_projects_for_role(projects, user.role)
+    return [p for p in projects if workspace.is_folder_visible_to_role(p.folder_id, user.role)]
 
 
 def _load_project_readme_content(
@@ -201,60 +202,28 @@ def _load_project_readme_content(
 @router.get("/", response_model=List[project_service.Project])
 async def list_projects(user: AuthenticatedUser = Depends(require_viewer)):
     """Return all registered projects (both Type-1 and Type-2)."""
-    projects = project_service.get_registered_projects()
-    return _filter_projects_for_user(projects, user)
+    rows = await asyncio.to_thread(workspace.get_all_projects, user.role)
+    return [_row_to_project(r) for r in rows]
 
 @router.get("/monorepos", response_model=List[Monorepo])
 async def list_monorepos(user: AuthenticatedUser = Depends(require_viewer)):
     """
     List all monorepos with their metadata.
+    Uses workspace DB — no subprocess calls.
     """
-    monorepos = []
-
-    if os.path.exists(project_service.MONOREPOS_ROOT):
-        all_projects = _filter_projects_for_user(project_service.get_registered_projects(), user)
-        projects_by_repo: dict[str, list[project_service.Project]] = {}
-        for project in all_projects:
-            if project.parent_repo:
-                projects_by_repo.setdefault(project.parent_repo, []).append(project)
-
-        for repo_name in sorted(os.listdir(project_service.MONOREPOS_ROOT)):
-            repo_path = os.path.join(project_service.MONOREPOS_ROOT, repo_name)
-            if not os.path.isdir(repo_path) or repo_name.startswith('.'):
-                continue
-
-            repo_projects = projects_by_repo.get(repo_name, [])
-            
-            # Get last synced time from git
-            last_synced = None
-            git_dir = os.path.join(repo_path, '.git')
-            if os.path.exists(git_dir):
-                try:
-                    result = subprocess.run(
-                        ["git", "-C", repo_path, "log", "-1", "--format=%ci"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if result.returncode == 0:
-                        last_synced = result.stdout.strip()
-                except (subprocess.SubprocessError, OSError):
-                    pass
-            
-            # Get repo URL from first project
-            repo_url = None
-            if repo_projects:
-                repo_url = repo_projects[0].repo_url
-            
-            monorepos.append(Monorepo(
-                name=repo_name,
-                path=repo_path,
-                project_count=len(repo_projects),
-                last_synced=last_synced,
-                repo_url=repo_url
-            ))
-    
-    return monorepos
+    repos = await asyncio.to_thread(workspace.get_repositories, "multi")
+    result = []
+    for repo in repos:
+        projects = await asyncio.to_thread(workspace.get_projects_by_repo, repo["id"])
+        abs_path = workspace._abs_clone_path(repo["clone_path"])
+        result.append(Monorepo(
+            name=repo["name"],
+            path=abs_path,
+            project_count=len(projects),
+            last_synced=repo.get("last_synced_at"),
+            repo_url=repo.get("url"),
+        ))
+    return result
 
 @router.get("/monorepos/{repo_name}/structure")
 async def get_monorepo_structure(
@@ -277,7 +246,8 @@ async def get_monorepo_structure(
     folders = []
     projects = []
     
-    all_registered = _filter_projects_for_user(project_service.get_registered_projects(), user)
+    all_rows = workspace.get_all_projects(user.role)
+    all_registered = [_row_to_project(r) for r in all_rows]
     repo_projects = {p.sub_path: p for p in all_registered if p.parent_repo == repo_name}
     
     for item_path in current_path.iterdir():
@@ -332,31 +302,24 @@ async def search_projects(
 ):
     """
     Search across all projects (standalone and monorepo sub-projects).
-    Returns matching projects based on name and description.
+    Uses SQL LIKE — no full hydration needed.
     """
-    query = q.strip().lower()
+    query = q.strip()
     if not query:
         return {"results": []}
 
-    all_projects = _filter_projects_for_user(project_service.get_registered_projects(), user)
-    
+    rows = await asyncio.to_thread(workspace.search_projects, query, limit, user.role)
     results = []
-    for project in all_projects:
-        if (query in project.name.lower() or 
-            query in project.description.lower() or
-            (project.parent_repo and query in project.parent_repo.lower())):
-            results.append({
-                "id": project.id,
-                "name": project.name,
-                "description": project.description,
-                "parent_repo": project.parent_repo,
-                "sub_path": project.sub_path,
-                "last_modified": project.last_modified,
-                "thumbnail_url": f"/api/projects/{project.id}/thumbnail"
-            })
-            if len(results) >= limit:
-                break
-    
+    for r in rows:
+        results.append({
+            "id": r["id"],
+            "name": r["name"],
+            "description": r.get("description", ""),
+            "parent_repo": r.get("parent_repo"),
+            "sub_path": r.get("relative_path") if r.get("relative_path") != "." else None,
+            "last_modified": r.get("last_modified", ""),
+            "thumbnail_url": f"/api/projects/{r['id']}/thumbnail" if r.get("thumbnail_rel") else None,
+        })
     return {"results": results}
 
 class AnalyzeRequest(BaseModel):
@@ -454,11 +417,19 @@ async def trigger_workflow(
 
 @router.get("/{project_id}/thumbnail")
 async def get_project_thumbnail(project_id: str, user: AuthenticatedUser = Depends(require_viewer)):
-    _ = get_project_for_role_or_404(project_id, user.role)
+    project = get_project_for_role_or_404(project_id, user.role)
+    # Use cached thumbnail path from DB, fallback to filesystem detection
+    row = workspace.get_project_by_id(project_id)
+    thumbnail_rel = row.get("thumbnail_rel") if row else None
+    if thumbnail_rel:
+        abs_path = os.path.join(project.path, thumbnail_rel)
+        if os.path.isfile(abs_path):
+            return FileResponse(abs_path, headers={"Cache-Control": "public, max-age=300"})
+    # Fallback: live filesystem detection
     path = project_service.get_project_thumbnail_path(project_id)
     if not path:
         raise HTTPException(status_code=404, detail="Thumbnail not found")
-    return FileResponse(path)
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=300"})
 
 @router.get("/{project_id}", response_model=project_service.Project)
 async def get_project_detail(project_id: str, user: AuthenticatedUser = Depends(require_viewer)):
@@ -568,7 +539,7 @@ async def delete_project_endpoint(project_id: str, user: AuthenticatedUser = Dep
     For monorepo sub-projects, only removes the registry entry.
     """
     _ = get_project_for_role_or_404(project_id, user.role)
-    success = project_service.delete_project(project_id)
+    success = await asyncio.to_thread(workspace.delete_project, project_id)
     if not success:
         raise HTTPException(status_code=404, detail="Project not found")
     return {"message": "Project deleted successfully"}
@@ -810,7 +781,7 @@ async def get_project_3d_model(project_id: str, user: AuthenticatedUser = Depend
     path = project_service.find_3d_model(project.path)
     if not path:
         raise HTTPException(status_code=404, detail="3D model not found")
-    return FileResponse(path)
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=300"})
 
 @router.get("/{project_id}/ibom")
 async def get_project_ibom(project_id: str, user: AuthenticatedUser = Depends(require_viewer)):
@@ -819,7 +790,7 @@ async def get_project_ibom(project_id: str, user: AuthenticatedUser = Depends(re
     path = project_service.find_ibom_file(project.path)
     if not path:
         raise HTTPException(status_code=404, detail="iBoM not found")
-    return FileResponse(path)
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=60"})
 
 
 # Path Configuration Endpoints
@@ -892,7 +863,6 @@ async def update_project_config(
     
     # Clear cache to ensure fresh resolution
     path_config_service.clear_config_cache(project.path)
-    project_service.invalidate_project_caches()
     file_service.invalidate_file_listing_cache()
     
     # Get resolved paths
@@ -950,7 +920,7 @@ async def update_project_name(
     
     # Save to .prism.json
     path_config_service.save_path_config(project.path, config)
-    project_service.invalidate_project_caches()
+    await asyncio.to_thread(workspace.update_project, project_id, display_name=display_name)
     
     return {
         "display_name": display_name,
@@ -985,9 +955,14 @@ async def update_project_description(
     if not next_description:
         next_description = f"Project {project.name}"
 
-    updated = project_service.update_project_description(project_id, next_description)
+    updated = await asyncio.to_thread(workspace.update_project, project_id, description=next_description)
     if not updated:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Also persist to .prism.json for compatibility
+    config = path_config_service.get_path_config(project.path)
+    config.description = next_description
+    path_config_service.save_path_config(project.path, config)
 
     return {
         "description": next_description,
