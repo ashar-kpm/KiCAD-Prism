@@ -57,12 +57,25 @@ def _count_tree_entries(commit, relative_path: str) -> int | None:
     return None
 
 
+def _commit_touches_path(repo: Repo, commit, relative_path: str) -> bool:
+    try:
+        args = ["--no-commit-id", "--name-only", "-r", "-m"]
+        if not commit.parents:
+            args.append("--root")
+        output = repo.git.diff_tree(*args, commit.hexsha, "--", relative_path)
+        return bool(output.strip())
+    except GitCommandError:
+        return False
+
+
 def _get_releases(repo_path: str, relative_path: str = None):
     repo = _open_repo(repo_path)
     releases = []
     try:
         for tag in repo.tags:
             commit = tag.commit
+            if relative_path and not _commit_touches_path(repo, commit, relative_path):
+                continue
             release = {
                 "tag": tag.name,
                 "commit_hash": commit.hexsha[:7],

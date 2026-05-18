@@ -107,6 +107,8 @@ class ProjectPropertiesResponse(BaseModel):
 
 def _repo_context(project: project_service.Project) -> tuple[str, Optional[str]]:
     """Return repository path and optional subproject relative path for project-scoped git operations."""
+    if project.parent_repo_path and project.sub_path:
+        return project.parent_repo_path, project.sub_path
     if project.import_type == "type2_subproject":
         return project.parent_repo_path or os.path.dirname(project.path), project.sub_path
     return project.path, None
@@ -440,8 +442,11 @@ async def get_project_detail(project_id: str, user: AuthenticatedUser = Depends(
 @router.get("/{project_id}/properties", response_model=ProjectPropertiesResponse)
 async def get_project_properties(project_id: str, user: AuthenticatedUser = Depends(require_viewer)):
     project = get_project_for_role_or_404(project_id, user.role)
-    repo_path, relative_path = _repo_context(project)
+    return await asyncio.to_thread(_build_project_properties, project)
 
+
+def _build_project_properties(project: project_service.Project) -> ProjectPropertiesResponse:
+    repo_path, relative_path = _repo_context(project)
     if relative_path:
         releases = get_releases_filtered(repo_path, relative_path)
         latest_commits = get_commits_list_filtered(repo_path, relative_path, 1)

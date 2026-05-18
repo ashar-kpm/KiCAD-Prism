@@ -52,7 +52,7 @@ SESSION_COOKIE_SECURE=false
 ALLOWED_USERS_STR=
 ALLOWED_DOMAINS_STR=
 BOOTSTRAP_ADMIN_USERS_STR=admin@example.com
-DEFAULT_VIEWER_DOMAINS_STR=pixxel.co.in,spacepixxel.co.in
+DEFAULT_VIEWER_DOMAINS_STR=
 GITHUB_TOKEN=
 DEV_MODE=false
 CATALOG_SQLITE_PATH=
@@ -70,6 +70,7 @@ PY
 
 Important:
 - `SESSION_SECRET` is required whenever auth is effectively enabled.
+- `DEFAULT_VIEWER_DOMAINS_STR` can stay empty. Set it only if every user from one or more trusted email domains should get implicit viewer access.
 - `CATALOG_SQLITE_PATH` can stay empty for the bundled Compose stack. Docker defaults to `/app/projects/.kicad-prism/prism.sqlite3`.
 - `CATALOG_DBL_EXPORT_DIR` can stay empty for the bundled Compose stack. Docker defaults to `/app/projects/.kicad-prism/exports/kicad-dbl`.
 - `SESSION_COOKIE_SECURE=true` should be used only behind HTTPS.
@@ -151,7 +152,7 @@ OIDC_PROVIDER_NAME=SSO
 OIDC_TOKEN_AUTH_METHOD=client_secret_post
 SESSION_SECRET=
 CORS_ORIGINS_STR=https://your-domain.example
-DEFAULT_VIEWER_DOMAINS_STR=pixxel.co.in,spacepixxel.co.in
+DEFAULT_VIEWER_DOMAINS_STR=
 DEV_MODE=false
 ```
 
@@ -160,7 +161,7 @@ Behavior:
 - backend exchanges the OIDC authorization code, verifies signed `id_token`s with JWKS, validates nonce, and reads user profile claims
 - backend issues an `HttpOnly` signed session cookie
 - RBAC role resolution uses stored assignments plus bootstrap admins
-- users from `DEFAULT_VIEWER_DOMAINS_STR` get implicit `viewer` access when no explicit role is stored
+- if `DEFAULT_VIEWER_DOMAINS_STR` is set, users from those domains get implicit `viewer` access when no explicit role is stored
 - on first successful login, those implicit viewers are written into `.rbac_roles.json` so admins can promote them later
 
 Google Sign-In uses this same generic OIDC path with
@@ -229,7 +230,7 @@ SESSION_COOKIE_SECURE=true
 
 ## Reverse Proxy for Office/VPN Hosting
 
-For an internal workstation deployment such as `http://kicad-prism.pixxel.space`, keep the SQLite
+For an internal workstation deployment such as `http://kicad-prism.example.internal`, keep the SQLite
 database and `.kicad-prism/components` asset directory on the workstation's local SSD/NVMe. Do not
 place either path on NFS/SMB/network storage; SQLite WAL mode is designed for local filesystems.
 
@@ -246,7 +247,7 @@ individual containers, use these path rules:
 For plain internal HTTP:
 
 ```env
-CORS_ORIGINS_STR=http://kicad-prism.pixxel.space
+CORS_ORIGINS_STR=http://kicad-prism.example.internal
 SESSION_COOKIE_SECURE=false
 ```
 

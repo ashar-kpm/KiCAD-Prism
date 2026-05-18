@@ -19,6 +19,8 @@ import { WorkspaceProjectToolbar } from "./workspace/workspace-project-toolbar";
 import { WorkspaceSidebar } from "./workspace/workspace-sidebar";
 import { WorkspaceSection, ViewMode } from "./workspace/workspace-types";
 
+const WORKSPACE_PAGE_SIZE = 25;
+
 const ImportDialog = lazy(() =>
   import("./import-dialog").then((module) => ({ default: module.ImportDialog }))
 );
@@ -76,6 +78,7 @@ export function Workspace({ searchQuery, user }: WorkspaceProps) {
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
   const canManageProjects = user?.role === "admin" || user?.role === "designer";
   const canOpenSettings = user?.role === "admin";
 
@@ -140,7 +143,22 @@ export function Workspace({ searchQuery, user }: WorkspaceProps) {
   }, [currentFolderId, folderById]);
 
   const listFolders = isSearching ? [] : visibleFolders;
-  const listProjects = isSearching ? searchResults : visibleProjects;
+  const allListProjects = isSearching ? searchResults : visibleProjects;
+  const totalPages = Math.max(1, Math.ceil(allListProjects.length / WORKSPACE_PAGE_SIZE));
+  const pageStart = (currentPage - 1) * WORKSPACE_PAGE_SIZE;
+  const listProjects = allListProjects.slice(pageStart, pageStart + WORKSPACE_PAGE_SIZE);
+  const pageLabel =
+    allListProjects.length === 0
+      ? "0 projects"
+      : `${pageStart + 1}-${Math.min(pageStart + WORKSPACE_PAGE_SIZE, allListProjects.length)} / ${allListProjects.length}`;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [currentFolderId, searchQuery, viewMode, section]);
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages));
+  }, [totalPages]);
 
   const openProject = (project: Project) => {
     navigate(`/project/${project.id}`);
@@ -337,15 +355,58 @@ export function Workspace({ searchQuery, user }: WorkspaceProps) {
 
                 <div className="relative mt-6 min-h-0 flex-1 overflow-hidden">
                   <div className="h-full overflow-y-auto pr-1">
+                    <div className="mb-4 flex items-center justify-between rounded-lg border bg-card/30 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">
+                        Page {currentPage} of {totalPages} · {pageLabel}
+                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={currentPage <= 1}
+                          onClick={() => setCurrentPage(1)}
+                        >
+                          First
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={currentPage <= 1}
+                          onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                        >
+                          Previous
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={currentPage >= totalPages}
+                          onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                        >
+                          Next
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={currentPage >= totalPages}
+                          onClick={() => setCurrentPage(totalPages)}
+                        >
+                          Last
+                        </Button>
+                      </div>
+                    </div>
                     {viewMode === "gallery" ? (
                       <WorkspaceGalleryView
                         searchQuery={searchQuery}
                         isSearching={isSearching}
-                        searchResults={searchResults}
+                        searchResults={listProjects}
                         selectedProjectId={selectedProjectId}
                         currentFolderId={currentFolderId}
                         visibleFolders={visibleFolders}
-                        visibleProjects={visibleProjects}
+                        visibleProjects={listProjects}
                         getProjectDisplayName={getProjectDisplayName}
                         onSelectProject={selectProject}
                         onOpenProject={openProject}

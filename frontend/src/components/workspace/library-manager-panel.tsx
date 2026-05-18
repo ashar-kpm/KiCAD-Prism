@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -66,6 +67,7 @@ import type {
 } from "@/types/catalog";
 
 const getErrorMsg = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const CATALOG_PAGE_SIZE = 100;
 
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -83,6 +85,11 @@ type ImportSelection = {
   targetLibrary: string;
   options: string[];
   selected: string;
+};
+
+type CatalogCategory = {
+  name: string;
+  count: number;
 };
 
 type NewComponentFormState = {
@@ -395,7 +402,10 @@ function FilePicker({
 export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
   // ── data state ──
   const [components, setComponents] = useState<CatalogComponent[]>([]);
+  const [categories, setCategories] = useState<CatalogCategory[]>([]);
   const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -407,6 +417,7 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
   const [viewMode, setViewMode] = useState<LibraryView>("table");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const deferredQuery = useDeferredValue(query);
 
   // ── selection ──
   const [selected, setSelected] = useState<CatalogComponent | null>(null);
@@ -439,42 +450,51 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
   const [selectedLinkTargetLibrary, setSelectedLinkTargetLibrary] = useState("");
   const [selectedLinkTargetName, setSelectedLinkTargetName] = useState("");
 
-  // ── categories derived ──
-  const categories = useMemo(() => {
-    const cats = new Set(components.map((c) => (c.category || "").trim()));
-    return [...cats].sort();
-  }, [components]);
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [deferredQuery, filterCategory, filterState, filterWorkflow, sortKey, sortDir, viewMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchJson<{ categories: CatalogCategory[] }>("/api/catalog/categories")
+      .then((res) => {
+        if (!cancelled) setCategories(res.categories);
+      })
+      .catch((err) => {
+        if (!cancelled) console.error("Failed to load catalog categories", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
   // ── fetch ──
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    const loadAllPages = async () => {
-      const allItems: CatalogComponent[] = [];
-      let page = 1;
-      let totalRows = 0;
-      let totalPages = 1;
+    const loadPage = async () => {
+      const params = new URLSearchParams({
+        page_size: String(CATALOG_PAGE_SIZE),
+        page: String(currentPage),
+        sort_by: sortKey,
+        sort_dir: sortDir,
+      });
+      const searchText = deferredQuery.trim();
+      if (searchText) params.set("q", searchText);
+      if (filterCategory !== null) params.set("category", filterCategory);
+      if (viewMode === "workflow" && filterState) params.set("availability_state", filterState);
+      if (viewMode === "table" && filterWorkflow) params.set("workflow_stage", filterWorkflow);
 
-      do {
-        const params = new URLSearchParams({ page_size: "500", page: String(page) });
-        if (filterCategory !== null) params.set("category", filterCategory);
-        if (viewMode === "workflow" && filterState) params.set("availability_state", filterState);
-        if (viewMode === "table" && filterWorkflow) params.set("workflow_stage", filterWorkflow);
-
-        const res = await fetchJson<PaginatedComponents>(`/api/catalog/components?${params.toString()}`);
-        allItems.push(...res.items);
-        totalRows = res.total;
-        totalPages = res.pages;
-        page += 1;
-      } while (page <= totalPages && !cancelled);
-
+      const res = await fetchJson<PaginatedComponents>(`/api/catalog/components?${params.toString()}`);
       if (!cancelled) {
-        setComponents(allItems);
-        setTotal(totalRows);
+        setComponents(res.items);
+        setTotal(res.total);
+        setTotalPages(res.pages);
+        if (currentPage > res.pages) setCurrentPage(res.pages);
       }
     };
 
-    loadAllPages()
+    loadPage()
       .catch((err) => {
         if (!cancelled) toast.error(getErrorMsg(err));
       })
@@ -485,26 +505,19 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey, filterCategory, filterState, filterWorkflow, viewMode]);
+  }, [refreshKey, currentPage, deferredQuery, filterCategory, filterState, filterWorkflow, viewMode, sortKey, sortDir]);
 
   // ── filtered + sorted list ──
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = components;
-    if (q) {
-      list = list.filter((c) =>
-        [c.name, c.manufacturer, c.mpn, c.description, c.package_name, c.category, c.vendor, c.sap_code]
-          .join(" ")
-          .toLowerCase()
-          .includes(q)
-      );
-    }
+    const list = components;
     return [...list].sort((a, b) => {
       const av = String(a[sortKey] ?? "").toLowerCase();
       const bv = String(b[sortKey] ?? "").toLowerCase();
       return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
     });
-  }, [components, query, sortKey, sortDir]);
+  }, [components, sortKey, sortDir]);
+
+  const categoryNames = useMemo(() => categories.map((category) => category.name), [categories]);
 
   const refresh = useCallback(() => {
     setRefreshKey((k) => k + 1);
@@ -914,7 +927,9 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
             {filterCategory === null && <Check className="h-3 w-3" />}
           </button>
 
-          {categories.map((cat) => (
+          {categories.map((category) => {
+            const cat = category.name;
+            return (
             <button
               key={cat}
               onClick={() => setFilterCategory(cat === filterCategory ? null : cat)}
@@ -926,9 +941,10 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
               )}
             >
               <span className="truncate">{cat || "Uncategorized"}</span>
-              <span className="text-[10px]">{components.filter((c) => (c.category || "").trim() === cat).length}</span>
+              <span className="text-[10px]">{category.count}</span>
             </button>
-          ))}
+            );
+          })}
         </ScrollArea>
 
         {isAdmin && (
@@ -1038,10 +1054,56 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
               <Button size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={refresh}>
                 <RefreshCw className="h-3.5 w-3.5" />
               </Button>
-              <span className="min-w-[64px] text-right text-[11px] text-muted-foreground">
-                {filtered.length} / {total}
+              <span className="min-w-[120px] text-right text-[11px] text-muted-foreground">
+                {total === 0
+                  ? "0 components"
+                  : `${(currentPage - 1) * CATALOG_PAGE_SIZE + 1}-${Math.min(currentPage * CATALOG_PAGE_SIZE, total)} / ${total}`}
               </span>
             </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between border-b border-border/50 bg-background/60 px-3 py-2">
+          <p className="text-[11px] text-muted-foreground">
+            Page {currentPage} of {totalPages} · {CATALOG_PAGE_SIZE} components per page
+          </p>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-[11px]"
+              disabled={loading || currentPage <= 1}
+              onClick={() => setCurrentPage(1)}
+            >
+              First
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-[11px]"
+              disabled={loading || currentPage <= 1}
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-[11px]"
+              disabled={loading || currentPage >= totalPages}
+              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+            >
+              Next
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-[11px]"
+              disabled={loading || currentPage >= totalPages}
+              onClick={() => setCurrentPage(totalPages)}
+            >
+              Last
+            </Button>
           </div>
         </div>
 
@@ -1424,7 +1486,7 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
 
           {newDialogTab === "manual" ? (
             <>
-              <ComponentForm form={newForm} onChange={(k, v) => setNewForm((f) => ({ ...f, [k]: v }))} categories={categories} />
+              <ComponentForm form={newForm} onChange={(k, v) => setNewForm((f) => ({ ...f, [k]: v }))} categories={categoryNames} />
               <DialogFooter className="mt-4">
                 <Button variant="outline" onClick={() => setShowNewDialog(false)}>Cancel</Button>
                 <Button onClick={handleCreate} disabled={submitting}>
@@ -1488,7 +1550,7 @@ export function LibraryManagerPanel({ user }: LibraryManagerPanelProps) {
           </DialogHeader>
 
           <ComponentForm
-            categories={categories}
+            categories={categoryNames}
             form={{
               value: editForm.value ?? "",
               description: editForm.description ?? "",

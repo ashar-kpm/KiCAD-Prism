@@ -1062,6 +1062,8 @@ class ComponentCatalogService:
         page_size: int = 50,
         released_only: bool = False,
         lightweight: bool = False,
+        sort_by: str = "",
+        sort_dir: str = "asc",
     ) -> dict[str, Any]:
         self.initialize()
         offset = (page - 1) * page_size
@@ -1118,7 +1120,32 @@ class ComponentCatalogService:
             filters.append(f"LOWER({revision_ref}.search_document) LIKE LOWER(?)")
             params.append(f"%{query_text}%")
         where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
-        if query_text:
+        sort_columns = {
+            "name": f"{revision_ref}.name",
+            "manufacturer": f"{revision_ref}.manufacturer",
+            "category": f"{revision_ref}.category",
+            "package_name": f"{revision_ref}.package_name",
+            "workflow_stage": f"{revision_ref}.release_status",
+            "release_status": f"{revision_ref}.release_status",
+            "updated_at": f"{revision_ref}.updated_at",
+        }
+        sort_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
+        sort_column = sort_columns.get(sort_by)
+        if sort_by == "availability_state":
+            symbol_exists = (
+                f"EXISTS (SELECT 1 FROM revision_assets ra_symbol_sort "
+                f"WHERE ra_symbol_sort.revision_id = {revision_ref}.id AND ra_symbol_sort.asset_type = 'symbol')"
+            )
+            footprint_exists = (
+                f"EXISTS (SELECT 1 FROM revision_assets ra_footprint_sort "
+                f"WHERE ra_footprint_sort.revision_id = {revision_ref}.id AND ra_footprint_sort.asset_type = 'footprint')"
+            )
+            sort_column = f"CASE WHEN {symbol_exists} AND {footprint_exists} THEN 0 WHEN ({symbol_exists}) <> ({footprint_exists}) THEN 1 ELSE 2 END"
+
+        if sort_column:
+            order_sql = f"ORDER BY {sort_column} {sort_direction}, {revision_ref}.updated_at DESC"
+            order_params = []
+        elif query_text:
             order_sql = (
                 f"ORDER BY CASE "
                 f"WHEN LOWER({revision_ref}.mpn) = LOWER(?) THEN 0 "

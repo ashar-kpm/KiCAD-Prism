@@ -261,7 +261,7 @@ def _property_first(properties: dict[str, str], names: tuple[str, ...]) -> str:
 
 def _infer_category(library: str) -> str:
     category = library
-    for prefix in ("Pixxel_", "Prism_"):
+    for prefix in ("Prism_",):
         if category.startswith(prefix):
             category = category[len(prefix) :]
     return category.replace("_", " ").strip() or library

@@ -632,7 +632,7 @@ def _run_workflow_job(job_id: str, project_id: str, workflow_type: str):
                     # Or just use author argument in commit
                     repo.git.commit(
                         m=commit_message, 
-                        author="KiCAD Prism <prism@pixxel.co.in>"
+                        author="KiCAD Prism <prism@example.com>"
                     )
                     job['logs'].append("Commit created.")
                     

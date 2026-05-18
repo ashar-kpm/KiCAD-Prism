@@ -66,6 +66,9 @@ async def list_catalog_components(
     include_inactive: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
+    sort_by: str = Query(default=""),
+    sort_dir: str = Query(default="asc"),
+    lightweight: bool = Query(default=False),
     user: AuthenticatedUser = Depends(require_admin),
 ):
     _ = user
@@ -79,9 +82,18 @@ async def list_catalog_components(
             include_inactive=include_inactive,
             page=page,
             page_size=page_size,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            lightweight=lightweight,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/categories")
+async def list_catalog_categories(user: AuthenticatedUser = Depends(require_admin)):
+    _ = user
+    return {"categories": catalog_service.list_categories()}
 
 
 @router.get("/workflow/summary")

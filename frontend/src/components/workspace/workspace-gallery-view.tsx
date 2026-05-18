@@ -1,6 +1,5 @@
 import { Folder } from "lucide-react";
 
-import { SearchProject } from "@/hooks/use-workspace-search";
 import { FolderTreeItem, Project } from "@/types/project";
 import { ProjectCard } from "@/components/project-card";
 
@@ -10,7 +9,7 @@ import { PROJECT_GRID_CLASS } from "./workspace-types";
 interface WorkspaceGalleryViewProps {
   searchQuery: string;
   isSearching: boolean;
-  searchResults: SearchProject[];
+  searchResults: Project[];
   selectedProjectId: string | null;
   currentFolderId: string | null;
   visibleFolders: FolderTreeItem[];

@@ -20,15 +20,15 @@ def build_metadata(base_url: str, kicad_version: str = "8.0.0") -> dict:
             "Installs a datasource descriptor for KiCAD Prism. After installing the ZIP in "
             "PCM, add the metadata URL to Remote Symbol Settings if KiCad does not auto-register it."
         ),
-        "identifier": "in.pixxel.kicad-prism.remote-symbols",
+        "identifier": "org.kicad-prism.remote-symbols",
         "type": "datasource",
         "author": {
             "name": "KiCAD Prism",
             "contact": {
-                "url": "https://github.com/PixxelSpace"
+                "url": "https://github.com/krishna-swaroop/KiCAD-Prism"
             }
         },
-        "license": "Proprietary",
+        "license": "Apache-2.0",
         "resources": {
             "server": base_url,
             "instructions": (

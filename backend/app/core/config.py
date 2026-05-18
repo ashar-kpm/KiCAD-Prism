@@ -132,7 +132,7 @@ class Settings(BaseSettings):
 
     # Comma-separated list of email domains that receive implicit viewer access.
     DEFAULT_VIEWER_DOMAINS_STR: str = Field(
-        default="pixxel.co.in,spacepixxel.co.in",
+        default="",
         description=(
             "Comma-separated list of email domains that get viewer access when no "
             "explicit RBAC assignment exists"
