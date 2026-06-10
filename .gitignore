@@ -31,3 +31,8 @@ dist/
 # (The project database is currently outside the repo, but just in case)
 project-database/
 data/
+
+# Deploy Data
+deploy/
+*.crt
+
